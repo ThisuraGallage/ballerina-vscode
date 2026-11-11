@@ -408,6 +408,8 @@ export interface FormProps {
     selectedNode?: NodeKind;
     onSubmit?: (data: FormValues, dirtyFields?: any) => void;
     onBlur?: (data: FormValues, dirtyFields?: any) => void;
+    // Called when a field loses focus, even while the form is incomplete or invalid (unlike onBlur)
+    onFieldBlur?: (data: FormValues) => void;
     onFormValidation?: (data: FormValues, dirtyFields?: any) => Promise<boolean>;
     isSaving?: boolean;
     openRecordEditor?: (isOpen: boolean, fields: FormValues, editingField?: FormField, newType?: string | NodeProperties) => void;
@@ -488,6 +490,7 @@ export const Form = forwardRef<FormHandle, FormProps>((props: FormProps, ref) =>
         actionButton,
         onSubmit,
         onBlur,
+        onFieldBlur,
         onFormValidation,
         isSaving,
         onCancelForm,
@@ -817,6 +820,7 @@ export const Form = forwardRef<FormHandle, FormProps>((props: FormProps, ref) =>
 
     const handleOnBlur = async () => {
         const values = getValues();
+        onFieldBlur?.(values);
         if (onFormValidation && !canRunExternalFormValidation(values)) {
             return;
         }

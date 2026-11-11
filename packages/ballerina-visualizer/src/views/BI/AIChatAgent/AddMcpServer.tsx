@@ -10,7 +10,7 @@
 import { AgentManagerMcpBinding, FlowNode, LineRange, McpToolsResponse, NodePosition, ProductMode, ToolData } from "@wso2/ballerina-core";
 import type { FormHandle } from "@wso2/ballerina-side-panel";
 import { useRpcContext } from "@wso2/ballerina-rpc-client";
-import { cloneDeep, debounce } from "lodash";
+import { cloneDeep } from "lodash";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FormLoadingState } from "@wso2/ballerina-side-panel";
 import { AgentManagerMcpGate, applyMcpBinding } from "../../../components/AgentManagerModels/McpProxies";
@@ -56,8 +56,7 @@ const INCLUDE_CONTEXT_PROPERTY = "includeContext";
 // Hidden properties the language server writes onto the toolkit class as @display {label, iconPath}.
 const TOOLKIT_LABEL_PROPERTY = "toolKitLabel";
 const TOOLKIT_ICON_PROPERTY = "toolKitIcon";
-// How long the server check waits after the URL stops changing, and how long a save waits for one still running.
-const SERVER_PROBE_DELAY_MS = 500;
+// How long a save waits for a server check still running.
 const SERVER_PROBE_SAVE_WAIT_MS = 5000;
 
 interface McpServerInfo {
@@ -126,6 +125,9 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
 
     const [serverUrl, setServerUrl] = useState("");
     const [auth, setAuth] = useState("");
+    // The URL and auth the server is asked about: taken when a field loses focus rather than on each keystroke, so
+    // a half-typed URL is never sent the token.
+    const [lookup, setLookup] = useState({ url: "", auth: "" });
     const [requiresAuth, setRequiresAuth] = useState(false);
     const [toolsInclude, setToolsInclude] = useState<string>("all");
 
@@ -190,8 +192,8 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
     // Module-level names are fetched in the background, so opening the form does not wait for a compilation.
     const reservedNamesRef = useRef<Promise<Set<string>>>(Promise.resolve(new Set()));
     const probeSeqRef = useRef<number>(0);
-    // The scheduled or running server check, so a save made before it answers can wait for it.
-    const probeRef = useRef<{ timer?: ReturnType<typeof setTimeout>; start?: () => void; running?: Promise<void> }>({});
+    // The running server check and what it asked about, so a save made before it answers can wait for it.
+    const probeRef = useRef<{ url?: string; auth?: string; running?: Promise<void> }>({});
 
     // An existing toolkit is edited with the form of the MCP client it is built on, whatever the ai version
     const fetchMcpToolKitTemplate = async (existingNode?: FlowNode) => {
@@ -442,14 +444,15 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
         }
     }
 
-    // A save made before the server check answers would write the generated name and no @display, so it runs
-    // a scheduled check at once and waits a bounded time for it, then names the saved node as the form would have.
+    // A save made before the server check answers would write the generated name and no @display, so it checks a
+    // URL saved without leaving its field, waits a bounded time for the check, then names the saved node as the
+    // form would have.
     async function nameAfterServer(node: FlowNode) {
-        const probe = probeRef.current;
-        if (probe.timer) {
-            clearTimeout(probe.timer);
-            probe.start?.();
+        if (!editMode && toolsInclude !== "selected" && serverUrl.trim()
+            && (probeRef.current.url !== serverUrl || probeRef.current.auth !== auth)) {
+            startProbe(serverUrl, auth);
         }
+        const probe = probeRef.current;
         if (probe.running) {
             await Promise.race([probe.running, new Promise((resolve) => setTimeout(resolve, SERVER_PROBE_SAVE_WAIT_MS))]);
         }
@@ -484,53 +487,35 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
         if (seq === probeSeqRef.current) applyServerInfo(response, reserved);
     }, [rpcClient, editMode]);
 
-    const cancelProbe = () => {
-        clearTimeout(probeRef.current.timer);
-        probeRef.current = {};
+    function startProbe(url: string, authValue: string) {
+        probeRef.current = { url, auth: authValue, running: probeServerInfo(url, authValue) };
+    }
+
+    // Takes the field values as what the server is asked about; unchanged values ask it nothing again.
+    const commitLookup = (url: string, authValue: string) => {
+        setLookup((prev) => prev.url === url && prev.auth === authValue ? prev : { url, auth: authValue });
     };
 
     useEffect(() => {
         if (editMode || toolsInclude === "selected") {
-            cancelProbe();
+            probeRef.current = {};
             return;
         }
-        if (!serverUrl.trim()) {
-            cancelProbe();
+        if (!lookup.url.trim()) {
+            probeRef.current = {};
             probeSeqRef.current++;
             void reservedNamesRef.current.then((reserved) => applyServerInfo(undefined, reserved));
             return;
         }
-        const probe: typeof probeRef.current = {};
-        probe.start = () => {
-            probe.timer = undefined;
-            probe.running = probeServerInfo(serverUrl, auth);
-        };
-        probe.timer = setTimeout(probe.start, SERVER_PROBE_DELAY_MS);
-        probeRef.current = probe;
-        return () => clearTimeout(probe.timer);
-    }, [serverUrl, auth, toolsInclude, editMode, probeServerInfo]);
+        startProbe(lookup.url, lookup.auth);
+    }, [lookup, toolsInclude, editMode, probeServerInfo]);
 
     useEffect(() => {
         initPanel();
     }, [initPanel]);
 
-    const debouncedFetchTools = useMemo(
-        () => debounce((url: string, authValue: string) => {
-            if (url.trim()) {
-                fetchToolsFromServer(url, authValue);
-            } else {
-                setAvailableMcpTools([]);
-                setSelectedMcpTools(new Set());
-                setLoadingMcpTools(false);
-                setMcpToolsError("");
-            }
-        }, 500),
-        [fetchToolsFromServer]
-    );
-
     useEffect(() => {
         if (toolsInclude !== "selected") {
-            debouncedFetchTools.cancel();
             setAvailableMcpTools([]);
             setSelectedMcpTools(new Set());
             setLoadingMcpTools(false);
@@ -543,9 +528,15 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
         if (isInitializingEditModeRef.current) return;
         if (editMode && toolSource !== null) return;
 
-        debouncedFetchTools(serverUrl, auth);
-        return () => debouncedFetchTools.cancel();
-    }, [serverUrl, auth, toolsInclude, requiresAuth, debouncedFetchTools]);
+        if (lookup.url.trim()) {
+            fetchToolsFromServer(lookup.url, requiresAuth ? lookup.auth : "");
+        } else {
+            setAvailableMcpTools([]);
+            setSelectedMcpTools(new Set());
+            setLoadingMcpTools(false);
+            setMcpToolsError("");
+        }
+    }, [lookup, toolsInclude, requiresAuth, fetchToolsFromServer]);
 
     useEffect(() => {
         // Clear auth field value when requiresAuth is unchecked
@@ -554,6 +545,10 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
             if (formRef.current?.setFieldValue) {
                 formRef.current.setFieldValue(AUTH_FIELD_KEY, "");
             }
+        }
+        // The server is no longer asked with the cleared auth
+        if (!requiresAuth) {
+            setLookup((prev) => prev.auth ? { ...prev, auth: "" } : prev);
         }
     }, [requiresAuth]);
 
@@ -852,6 +847,8 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
         pickedProxy.current = { proxyId, created: binding.created ?? [], properties: cloneDeep(mcpToolKitNodeRef.current.properties) };
         applyMcpBinding(mcpToolKitNodeRef.current, binding, proxyId);
         setRequiresAuth(!!binding.auth);
+        // The picked server is filled in, not typed, so no field loses focus to ask it
+        commitLookup(binding.serverUrl ?? "", binding.auth ?? "");
         startHttpConfigAuthSync();
         setFormKey((key) => key + 1);
     }, []);
@@ -870,6 +867,7 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
         autoToolKitNameRef.current = undefined;
         setServerUrl("");
         setAuth("");
+        commitLookup("", "");
         setRequiresAuth(false);
         startHttpConfigAuthSync();
         setFormKey((key) => key + 1);
@@ -1056,6 +1054,7 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
                     }
                 }
             }}
+            onFieldBlur={() => commitLookup(serverUrl, auth)}
             derivedFields={httpConfigAuthDerivations}
             showProgressIndicator={isSaving}
             disableSaveButton={isSaveDisabled}

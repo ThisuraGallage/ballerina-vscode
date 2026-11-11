@@ -187,6 +187,7 @@ interface FlowNodeFormProps {
     isInModal?: boolean;
     scopeFieldAddon?: React.ReactNode;
     onChange?: (fieldKey: string, value: any, allValues: FormValues) => void;
+    onFieldBlur?: (allValues: FormValues) => void; // Called when a field loses focus, even on an incomplete form
     injectedComponents?: {
         component: React.ReactNode;
         index: number;
@@ -331,6 +332,7 @@ export const FlowNodeForm = forwardRef<FormHandle, FlowNodeFormProps>(function F
         isInModal,
         scopeFieldAddon,
         onChange,
+        onFieldBlur,
         injectedComponents,
         fieldPriority,
         footerActionButton,
@@ -2334,6 +2336,7 @@ export const FlowNodeForm = forwardRef<FormHandle, FlowNodeFormProps>(function F
                     popupManager={popupManager}
                     onSubmit={handleOnSubmit}
                     onBlur={handleOnBlur}
+                    onFieldBlur={onFieldBlur}
                     openView={handleOpenView}
                     openSubPanel={openSubPanel}
                     subPanelView={subPanelView}
