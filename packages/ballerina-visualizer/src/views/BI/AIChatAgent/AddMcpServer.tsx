@@ -1054,7 +1054,9 @@ export function AddMcpServer(props: AddMcpServerProps): JSX.Element {
                     }
                 }
             }}
-            onFieldBlur={() => commitLookup(serverUrl, auth)}
+            // Reads the values passed in, not state: an editor can keep the callback it was first given
+            onFieldBlur={(values) => commitLookup(stringValue(values[SERVER_URL_FIELD_KEY]) ?? "",
+                stringValue(values[AUTH_FIELD_KEY]) ?? "")}
             derivedFields={httpConfigAuthDerivations}
             showProgressIndicator={isSaving}
             disableSaveButton={isSaveDisabled}
